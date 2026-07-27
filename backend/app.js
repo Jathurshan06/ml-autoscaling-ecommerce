@@ -4,6 +4,7 @@ const cors = require("cors");
 const notFound = require("./middleware/notFound");
 const errorHandler = require("./middleware/errorHandler");
 const authRoutes = require("./routes/authRoutes");
+const path = require("path");
 
 dotenv.config();
 
@@ -14,6 +15,11 @@ const productRoutes = require("./routes/productRoutes");
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+app.use(
+    "/images",
+    express.static(path.join(__dirname, "public/images"))
+);
 
 // Home Route
 app.get("/", (req, res) => {
