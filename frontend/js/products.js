@@ -1,5 +1,4 @@
-const API_URL = "http://localhost:3000/api/products";
-
+const API_URL = `${API_BASE_URL}/products`;
 
 async function loadProducts() {
 
@@ -19,7 +18,7 @@ async function loadProducts() {
 
         card.innerHTML = `
             <img 
-                src="http://localhost:3000${product.image_url}" 
+                src="${IMAGE_BASE_URL}${product.image_url}"
                 alt="${product.name}"
             >
 
