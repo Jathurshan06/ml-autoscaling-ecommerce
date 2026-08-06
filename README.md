@@ -113,22 +113,20 @@ Before running the application, make sure the following tools are installed:
 
 ## Clone the Repository
 
-Clone the repository:
-
 git clone https://github.com/Jathurshan06/ml-autoscaling-ecommerce.git
 
-Start the Application
+## Start the Application
 
 docker-compose up --build
 
-Frontend Application
+## Frontend Application
 
 http://localhost:8080
 
-Backend API
+## Backend API
 
 http://localhost:3000
 
-Stop the Application
+## Stop the Application
 
 docker-compose down
