@@ -1,0 +1,2794 @@
+
+============================================================
+FILE: backend/app.js
+============================================================
+const express = require("express");
+const dotenv = require("dotenv");
+const cors = require("cors");
+const notFound = require("./middleware/notFound");
+const errorHandler = require("./middleware/errorHandler");
+const authRoutes = require("./routes/authRoutes");
+const path = require("path");
+
+dotenv.config();
+
+const app = express();
+
+const productRoutes = require("./routes/productRoutes");
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+app.use(
+    "/images",
+    express.static(path.join(__dirname, "public/images"))
+);
+
+// Home Route
+app.get("/", (req, res) => {
+    res.send("ML Autoscaling E-commerce Backend API");
+});
+
+// Product Routes
+app.use("/api/products", productRoutes);
+
+// Authentication Routes
+app.use("/api/auth", authRoutes);
+
+app.use(notFound);
+app.use(errorHandler);
+
+// Start Server
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});
+
+============================================================
+FILE: backend/config/db.js
+============================================================
+const { Pool } = require("pg");
+require("dotenv").config();
+
+const pool = new Pool({
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT,
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+});
+
+module.exports = pool;
+
+============================================================
+FILE: backend/controllers/authController.js
+============================================================
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const userModel = require("../models/userModel");
+
+async function register(req, res, next) {
+    try {
+        const { first_name, last_name, email, password } = req.body;
+
+        // Check required fields
+        if (!first_name || !last_name || !email || !password) {
+            res.status(400);
+            throw new Error("All fields are required");
+        }
+
+        // Check if user already exists
+        const existingUser = await userModel.findUserByEmail(email);
+
+        if (existingUser) {
+            res.status(400);
+            throw new Error("Email already exists");
+        }
+
+        // Hash password
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Save user
+        const user = await userModel.createUser(
+            first_name,
+            last_name,
+            email,
+            hashedPassword
+        );
+
+        res.status(201).json({
+            success: true,
+            message: "User registered successfully",
+            user,
+        });
+
+    } catch (error) {
+        next(error);
+    }
+}
+
+async function login(req, res, next) {
+    try {
+        const { email, password } = req.body;
+
+        // Check required fields
+        if (!email || !password) {
+            res.status(400);
+            throw new Error("Email and password are required");
+        }
+
+        // Find user
+        const user = await userModel.findUserByEmail(email);
+
+        if (!user) {
+            res.status(401);
+            throw new Error("Invalid email or password");
+        }
+
+        // Compare password
+        const isMatch = await bcrypt.compare(password, user.password);
+
+        if (!isMatch) {
+            res.status(401);
+            throw new Error("Invalid email or password");
+        }
+
+        // Generate JWT
+        const token = jwt.sign(
+            {
+                id: user.id,
+                email: user.email
+            },
+            process.env.JWT_SECRET,
+            {
+                expiresIn: "1d"
+            }
+        );
+
+        res.status(200).json({
+            success: true,
+            message: "Login successful",
+            token,
+            user: {
+                id: user.id,
+                first_name: user.first_name,
+                last_name: user.last_name,
+                email: user.email
+            }
+        });
+
+    } catch (error) {
+        next(error);
+    }
+}
+
+module.exports = {
+    register,
+    login,
+};
+
+============================================================
+FILE: backend/controllers/productController.js
+============================================================
+const productModel = require("../models/productModel");
+
+async function getAllProducts(req, res) {
+    try {
+        const products = await productModel.getAllProducts();
+
+        res.status(200).json(products);
+    } catch (error) {
+        console.error("Error fetching products:", error);
+
+        res.status(500).json({
+            message: "Internal Server Error",
+        });
+    }
+}
+
+async function getProductById(req, res) {
+    try {
+        const id = req.params.id;
+
+        const product = await productModel.getProductById(id);
+
+        if (!product) {
+            return res.status(404).json({
+                message: "Product not found",
+            });
+        }
+
+        res.status(200).json(product);
+
+    } catch (error) {
+        console.error("Error fetching product:", error);
+
+        res.status(500).json({
+            message: "Internal Server Error",
+        });
+    }
+}
+
+module.exports = {
+    getAllProducts,
+    getProductById,
+};
+
+============================================================
+FILE: backend/middleware/errorHandler.js
+============================================================
+function errorHandler(err, req, res, next) {
+
+    console.error(err);
+
+    const statusCode = res.statusCode === 200
+        ? 500
+        : res.statusCode;
+
+    res.status(statusCode).json({
+        success: false,
+        message: err.message || "Internal Server Error"
+    });
+
+}
+
+module.exports = errorHandler;
+
+============================================================
+FILE: backend/middleware/notFound.js
+============================================================
+function notFound(req, res, next) {
+
+    const error = new Error(
+        `Route not found - ${req.originalUrl}`
+    );
+
+    res.status(404);
+
+    next(error);
+
+}
+
+module.exports = notFound;
+
+============================================================
+FILE: backend/models/productModel.js
+============================================================
+const pool = require("../config/db");
+
+async function getAllProducts() {
+    const result = await pool.query(`
+        SELECT
+            id,
+            name,
+            description,
+            price,
+            image_url,
+            created_at
+        FROM products
+        ORDER BY id;
+    `);
+
+    return result.rows;
+}
+
+async function getProductById(id) {
+    const result = await pool.query(
+        `
+        SELECT
+            id,
+            name,
+            description,
+            price,
+            image_url,
+            created_at
+        FROM products
+        WHERE id = $1;
+        `,
+        [id]
+    );
+
+    return result.rows[0];
+}
+
+module.exports = {
+    getAllProducts,
+    getProductById,
+};
+
+
+
+============================================================
+FILE: backend/models/userModel.js
+============================================================
+const pool = require("../config/db");
+
+async function findUserByEmail(email) {
+    const result = await pool.query(
+        `
+        SELECT *
+        FROM users
+        WHERE email = $1;
+        `,
+        [email]
+    );
+
+    return result.rows[0];
+}
+
+async function createUser(firstName, lastName, email, hashedPassword) {
+    const result = await pool.query(
+        `
+        INSERT INTO users
+        (first_name, last_name, email, password)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, first_name, last_name, email, created_at;
+        `,
+        [firstName, lastName, email, hashedPassword]
+    );
+
+    return result.rows[0];
+}
+
+module.exports = {
+    findUserByEmail,
+    createUser,
+};
+
+============================================================
+FILE: backend/routes/authRoutes.js
+============================================================
+const express = require("express");
+const router = express.Router();
+
+const authController = require("../controllers/authController");
+
+// register
+router.post("/register", authController.register);
+
+// Login
+router.post("/login", authController.login);
+
+module.exports = router;
+
+============================================================
+FILE: backend/routes/productRoutes.js
+============================================================
+const express = require("express");
+const router = express.Router();
+
+const productController = require("../controllers/productController");
+
+// GET /api/products
+router.get("/", productController.getAllProducts);
+
+// GET /api/products/:id
+router.get("/:id", productController.getProductById);
+
+
+module.exports = router;
+
+============================================================
+FILE: frontend/css/style.css
+============================================================
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: Arial, sans-serif;
+    background-color: #f4f4f4;
+    color: #333;
+}
+
+header {
+    background-color: #2c3e50;
+    color: white;
+    padding: 20px;
+}
+
+nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+nav ul {
+    list-style: none;
+    display: flex;
+    gap: 20px;
+}
+
+nav a {
+    color: white;
+    text-decoration: none;
+    font-weight: bold;
+}
+
+nav a:hover {
+    color: #3498db;
+}
+
+.hero {
+    text-align: center;
+
+    padding: 120px 20px;
+
+    background-image: url("../images/banner.jpg");
+
+    background-size: cover;
+
+    background-position: center;
+
+    color: white;
+
+    position: relative;
+}
+
+.hero h2 {
+    font-size: 40px;
+    margin-bottom: 20px;
+}
+
+.hero p {
+    font-size: 18px;
+    margin-bottom: 30px;
+}
+
+.hero button {
+    background-color: #3498db;
+    color: white;
+    border: none;
+    padding: 12px 24px;
+    font-size: 16px;
+    cursor: pointer;
+    border-radius: 5px;
+}
+
+.hero h2,
+.hero p,
+.hero button {
+
+    position: relative;
+
+    z-index: 1;
+
+}
+
+.hero button:hover {
+    background-color: #2980b9;
+}
+
+footer {
+    text-align: center;
+    padding: 20px;
+    background-color: #2c3e50;
+    color: white;
+    margin-top: 80px;
+}
+
+.products-section {
+    padding: 40px;
+    text-align: center;
+}
+
+
+#product-container {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    margin-top: 30px;
+}
+
+
+.product-card {
+
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+
+}
+
+
+.product-card h3 {
+
+    margin-bottom: 10px;
+
+}
+
+.product-card img {
+
+    width: 100%;
+    height: 200px;
+    object-fit: cover;
+    border-radius: 8px;
+
+}
+
+
+.product-card button {
+
+    margin-top: 15px;
+    padding: 10px 20px;
+
+    background-color: #3498db;
+    color: white;
+
+    border: none;
+    border-radius: 5px;
+
+    cursor: pointer;
+
+}
+
+
+.product-card button:hover {
+
+    background-color: #2980b9;
+
+}
+
+.featured-products {
+
+    padding: 50px 40px;
+
+    text-align: center;
+
+}
+
+
+.featured-products h2 {
+
+    margin-bottom: 30px;
+
+}
+
+
+#featured-container {
+
+    display: grid;
+
+    grid-template-columns: repeat(3, 1fr);
+
+    gap: 20px;
+
+}
+
+#product-details{
+
+    max-width:600px;
+
+    margin:40px auto;
+
+}
+
+============================================================
+FILE: frontend/index.html
+============================================================
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>ML Autoscaling E-Commerce</title>
+
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+
+    <header>
+        <nav>
+            <h1>ML Autoscaling E-Commerce</h1>
+
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="products.html">Products</a></li>
+                <li><a href="register.html">Register</a></li>
+                <li><a href="login.html">Login</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+
+        <section class="hero">
+
+            <h2>Welcome to ML Autoscaling E-Commerce</h2>
+
+                <p>
+                    A simple e-commerce application built using
+                    HTML, CSS, JavaScript, Node.js, Express, and PostgreSQL.
+                </p>
+
+            <a href="products.html">
+                <button>View All Products</button>
+            </a>
+
+        </section>
+
+
+        <section class="featured-products">
+
+            <h2>Featured Products</h2>
+
+            <div id="featured-container"></div>
+
+        </section>
+
+        
+
+    </main>
+
+    <footer>
+
+        <p>
+            © 2026 ML Autoscaling E-Commerce Project
+        </p>
+
+    </footer>
+
+    <script src="js/api.js"></script>
+    <script src="js/home.js"></script>
+
+</body>
+
+</html>
+
+============================================================
+FILE: frontend/js/api.js
+============================================================
+const API_BASE_URL = "/api";
+const IMAGE_BASE_URL = "";
+
+
+============================================================
+FILE: frontend/js/home.js
+============================================================
+const API_URL = `${API_BASE_URL}/products`;
+
+async function loadFeaturedProducts() {
+
+    const response = await fetch(API_URL);
+
+    const products = await response.json();
+
+
+    const container = document.getElementById(
+        "featured-container"
+    );
+
+
+    products.slice(0, 6).forEach(product => {
+
+        const card = document.createElement("div");
+
+        card.className = "product-card";
+
+
+        card.innerHTML = `
+            <img 
+                src="${IMAGE_BASE_URL}${product.image_url}"
+                alt="${product.name}"
+            >
+
+            <h3>${product.name}</h3>
+
+            <p>${product.description}</p>
+
+            <p>
+                £${product.price}
+            </p>
+        `;
+
+
+        container.appendChild(card);
+
+    });
+
+}
+
+loadFeaturedProducts();
+
+============================================================
+FILE: frontend/js/login.js
+============================================================
+
+
+============================================================
+FILE: frontend/js/product.js
+============================================================
+const params = new URLSearchParams(window.location.search);
+
+const id = params.get("id");
+
+const API_URL = `${API_BASE_URL}/products/${id}`;
+
+async function loadProduct() {
+
+    const response = await fetch(API_URL);
+
+    const product = await response.json();
+
+    document.getElementById("product-details").innerHTML = `
+
+        <div class="product-card">
+
+            <img
+                src="${IMAGE_BASE_URL}${product.image_url}"
+                alt="${product.name}"
+            >
+
+            <h2>${product.name}</h2>
+
+            <p>${product.description}</p>
+
+            <h3>£${product.price}</h3>
+
+        </div>
+
+    `;
+}
+
+loadProduct();
+
+============================================================
+FILE: frontend/js/products.js
+============================================================
+const API_URL = `${API_BASE_URL}/products`;
+
+async function loadProducts() {
+
+    const response = await fetch(API_URL);
+
+    const products = await response.json();
+
+    const container = document.getElementById("product-container");
+
+
+    products.forEach(product => {
+
+        const card = document.createElement("div");
+
+        card.className = "product-card";
+
+
+        card.innerHTML = `
+            <img 
+                src="${IMAGE_BASE_URL}${product.image_url}"
+                alt="${product.name}"
+            >
+
+            <h3>${product.name}</h3>
+
+            <p>${product.description}</p>
+
+            <p>
+                Price: £${product.price}
+            </p>
+
+            <a href="product.html?id=${product.id}">
+                <button>
+                     View Details
+                </button>
+            </a>
+        `;
+
+
+        container.appendChild(card);
+
+    });
+
+}
+
+
+loadProducts();
+
+============================================================
+FILE: frontend/js/register.js
+============================================================
+
+
+============================================================
+FILE: frontend/login.html
+============================================================
+
+
+============================================================
+FILE: frontend/product.html
+============================================================
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta name="viewport"
+content="width=device-width, initial-scale=1.0">
+
+<title>Product Details</title>
+
+<link rel="stylesheet"
+href="css/style.css">
+
+</head>
+
+<body>
+
+<header>
+
+<nav>
+
+<h1>ML Autoscaling E-Commerce</h1>
+
+</nav>
+
+</header>
+
+<main>
+
+<div id="product-details"></div>
+
+</main>
+
+<script src="js/api.js"></script>
+<script src="js/product.js"></script>
+
+</body>
+
+</html>
+
+============================================================
+FILE: frontend/products.html
+============================================================
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Products</title>
+
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+
+<header>
+    <nav>
+        <h1>ML Autoscaling E-Commerce</h1>
+
+        <ul>
+            <li><a href="index.html">Home</a></li>
+            <li><a href="products.html">Products</a></li>
+            <li><a href="register.html">Register</a></li>
+            <li><a href="login.html">Login</a></li>
+        </ul>
+    </nav>
+</header>
+
+
+<main>
+
+    <section class="products-section">
+
+        <h2>Our Products</h2>
+
+        <div id="product-container"></div>
+
+    </section>
+
+</main>
+
+
+<footer>
+
+    <p>
+        © 2026 ML Autoscaling E-Commerce Project
+    </p>
+
+</footer>
+
+
+<script src="js/api.js"></script>
+<script src="js/products.js"></script>
+
+</body>
+
+</html>
+
+============================================================
+FILE: frontend/register.html
+============================================================
+
+
+============================================================
+FILE: kubernetes/backend/backend-deployment.yaml
+============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: ml-autoscaling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: jathu06/vjtech-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          env:
+            - name: DB_HOST
+              value: "postgres"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: "vjtech_db"
+            - name: DB_USER
+              value: "postgres"
+            - name: DB_PASSWORD
+              value: "postgres123"
+
+
+============================================================
+FILE: kubernetes/backend/backend-hpa-backup.yaml
+============================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  creationTimestamp: "2026-08-17T00:56:53Z"
+  name: backend
+  namespace: ml-autoscaling
+  resourceVersion: "349843"
+  uid: 576ce1bb-9ad8-4a34-9934-b0444c14ece7
+spec:
+  maxReplicas: 5
+  metrics:
+  - resource:
+      name: cpu
+      target:
+        averageUtilization: 50
+        type: Utilization
+    type: Resource
+  minReplicas: 1
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+status:
+  conditions:
+  - lastTransitionTime: "2026-08-28T19:12:15Z"
+    message: recommended size matches current size
+    reason: ReadyForNewScale
+    status: "True"
+    type: AbleToScale
+  - lastTransitionTime: "2026-08-24T07:58:06Z"
+    message: the HPA was able to successfully calculate a replica count from cpu resource
+      utilization (percentage of request)
+    reason: ValidMetricFound
+    status: "True"
+    type: ScalingActive
+  - lastTransitionTime: "2026-08-28T21:06:50Z"
+    message: the desired count is within the acceptable range
+    reason: DesiredWithinRange
+    status: "False"
+    type: ScalingLimited
+  currentMetrics:
+  - resource:
+      current:
+        averageUtilization: 1
+        averageValue: 1m
+      name: cpu
+    type: Resource
+  currentReplicas: 1
+  desiredReplicas: 1
+  lastScaleTime: "2026-08-28T21:09:46Z"
+
+
+============================================================
+FILE: kubernetes/backend/backend-service.yaml
+============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: ml-autoscaling
+spec:
+  selector:
+    app: backend
+  ports:
+    - protocol: TCP
+      port: 3000
+      targetPort: 3000
+      nodePort: 30000
+  type: NodePort
+
+
+============================================================
+FILE: kubernetes/database/postgres-deployment.yaml
+============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: ml-autoscaling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: "vjtech_db"
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              value: "postgres123"
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+
+
+============================================================
+FILE: kubernetes/database/postgres-pvc.yaml
+============================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: ml-autoscaling
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+
+============================================================
+FILE: kubernetes/database/postgres-service.yaml
+============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: ml-autoscaling
+spec:
+  selector:
+    app: postgres
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432
+  type: ClusterIP
+
+
+============================================================
+FILE: kubernetes/frontend/frontend-deployment.yaml
+============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: ml-autoscaling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: jathu06/vjtech-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+
+
+============================================================
+FILE: kubernetes/frontend/frontend-service.yaml
+============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: ml-autoscaling
+spec:
+  selector:
+    app: frontend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: NodePort
+
+
+============================================================
+FILE: kubernetes/namespace.yaml
+============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ml-autoscaling
+
+
+============================================================
+FILE: ml/scripts/collect_metrics.py
+============================================================
+import csv
+import time
+from datetime import datetime
+
+import requests
+
+PROMETHEUS_URL = "http://127.0.0.1:9090"
+
+RUN_TIMESTAMP = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+OUTPUT_FILE = (
+    f"ml/data/metrics_{RUN_TIMESTAMP}.csv"
+)
+
+SAMPLE_INTERVAL = 10  # seconds
+
+
+QUERIES = {
+    "request_rate": 'sum(rate(k6_http_reqs_total[1m]))',
+
+    "vus": 'k6_vus',
+
+    "cpu_mcpu": '''
+        sum(
+            rate(
+                container_cpu_usage_seconds_total{
+                    namespace="ml-autoscaling",
+                    pod=~"backend-.*",
+                    cpu="total"
+                }[1m]
+            )
+        ) * 1000
+    ''',
+
+    "memory_mib": '''
+        sum(
+            container_memory_working_set_bytes{
+                namespace="ml-autoscaling",
+                pod=~"backend-.*"
+            }
+        ) / 1024 / 1024
+    ''',
+
+    "replicas": '''
+        kube_deployment_status_replicas{
+            namespace="ml-autoscaling",
+            deployment="backend"
+        }
+    ''',
+
+    "hpa_desired_replicas": '''
+        kube_horizontalpodautoscaler_status_desired_replicas{
+            namespace="ml-autoscaling",
+            horizontalpodautoscaler="backend"
+        }
+    ''',
+
+    "avg_response_ms": '''
+        sum(rate(k6_http_req_duration_milliseconds_sum[1m]))
+        /
+        sum(rate(k6_http_req_duration_milliseconds_count[1m]))
+    ''',
+
+    "p95_response_ms": '''
+        histogram_quantile(
+            0.95,
+            sum by (le) (
+                rate(k6_http_req_duration_milliseconds_bucket[1m])
+            )
+        )
+    ''',
+
+    "failed_req_rate": '''
+        sum(rate(
+            k6_http_req_failed_total{
+                condition="nonzero"
+            }[1m]
+        ))
+    '''
+}
+
+
+def query_prometheus(query):
+    try:
+        response = requests.get(
+            f"{PROMETHEUS_URL}/api/v1/query",
+            params={"query": query},
+            timeout=5,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        results = data["data"]["result"]
+
+        if not results:
+            return 0.0
+
+        return float(results[0]["value"][1])
+
+    except Exception as error:
+        print(f"Query error: {error}")
+        return 0.0
+
+
+def collect():
+    fieldnames = ["timestamp"] + list(QUERIES.keys())
+
+    print("Starting Prometheus metric collection...")
+    print(f"Saving data to: {OUTPUT_FILE}")
+    print(f"Sampling interval: {SAMPLE_INTERVAL} seconds")
+    print("Press Ctrl+C to stop.")
+
+    with open(OUTPUT_FILE, "a", newline="") as csvfile:
+
+        writer = csv.DictWriter(
+            csvfile,
+            fieldnames=fieldnames
+        )
+
+        if csvfile.tell() == 0:
+            writer.writeheader()
+
+        try:
+            while True:
+
+                row = {
+                    "timestamp": datetime.now().isoformat()
+                }
+
+                for metric_name, query in QUERIES.items():
+                    row[metric_name] = query_prometheus(query)
+
+                writer.writerow(row)
+                csvfile.flush()
+
+                print(row)
+
+                time.sleep(SAMPLE_INTERVAL)
+
+        except KeyboardInterrupt:
+            print("\nMetric collection stopped.")
+
+
+if __name__ == "__main__":
+    collect()
+
+
+============================================================
+FILE: ml/scripts/compare_autoscalers.py
+============================================================
+import pandas as pd
+import numpy as np
+
+
+HPA_FILE = "ml/data/final_hpa_run.csv"
+PRED_FILE = "ml/data/final_predictive_run.csv"
+
+# Consider workload active when request rate exceeds 1 req/s
+ACTIVE_THRESHOLD = 1.0
+
+
+def load_and_trim(path, name):
+    df = pd.read_csv(path)
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = df.sort_values("timestamp").reset_index(drop=True)
+
+    active = df[df["request_rate"] > ACTIVE_THRESHOLD]
+
+    if active.empty:
+        raise ValueError(f"No active workload found in {path}")
+
+    start = active["timestamp"].iloc[0]
+    end = active["timestamp"].iloc[-1]
+
+    trimmed = df[
+        (df["timestamp"] >= start) &
+        (df["timestamp"] <= end)
+    ].copy()
+
+    trimmed = trimmed.reset_index(drop=True)
+
+    return trimmed, start, end
+
+
+def calculate_metrics(df, name):
+
+    duration = (
+        df["timestamp"].iloc[-1]
+        - df["timestamp"].iloc[0]
+    ).total_seconds()
+
+    # Approximate time represented by each observation
+    intervals = (
+        df["timestamp"]
+        .diff()
+        .dt.total_seconds()
+    )
+
+    sample_interval = intervals.median()
+
+    # Replica-seconds approximates total allocated pod time
+    replica_seconds = (
+        df["replicas"].sum() * sample_interval
+    )
+
+    replica_minutes = replica_seconds / 60
+
+    return {
+        "Method": name,
+        "Samples": len(df),
+        "Duration_min": duration / 60,
+        "Max_request_rate": df["request_rate"].max(),
+        "Avg_request_rate": df["request_rate"].mean(),
+        "Max_CPU_mCPU": df["cpu_mcpu"].max(),
+        "Avg_CPU_mCPU": df["cpu_mcpu"].mean(),
+        "Max_replicas": df["replicas"].max(),
+        "Avg_replicas": df["replicas"].mean(),
+        "Replica_minutes": replica_minutes,
+        "Avg_response_ms": df["avg_response_ms"].mean(),
+        "Max_avg_response_ms": df["avg_response_ms"].max(),
+        "Avg_p95_ms": df["p95_response_ms"].mean(),
+        "Max_p95_ms": df["p95_response_ms"].max(),
+        "Max_failed_req_rate": df["failed_req_rate"].max(),
+    }
+
+
+def print_scaling_events(df, name):
+
+    print(f"\n=== {name} REPLICA CHANGES ===")
+
+    previous = None
+
+    start = df["timestamp"].iloc[0]
+
+    for _, row in df.iterrows():
+
+        current = int(row["replicas"])
+
+        if previous is None:
+            previous = current
+            print(
+                f"+0.0s -> {current} replica(s)"
+            )
+            continue
+
+        if current != previous:
+
+            elapsed = (
+                row["timestamp"] - start
+            ).total_seconds()
+
+            print(
+                f"+{elapsed:.1f}s: "
+                f"{previous} -> {current} replicas | "
+                f"request_rate={row['request_rate']:.2f} | "
+                f"CPU={row['cpu_mcpu']:.2f}m"
+            )
+
+            previous = current
+
+
+hpa, hpa_start, hpa_end = load_and_trim(
+    HPA_FILE,
+    "HPA"
+)
+
+pred, pred_start, pred_end = load_and_trim(
+    PRED_FILE,
+    "Predictive"
+)
+
+
+print("=== ACTIVE WORKLOAD WINDOWS ===")
+
+print(
+    "HPA:",
+    hpa_start,
+    "to",
+    hpa_end,
+    f"({(hpa_end-hpa_start).total_seconds()/60:.2f} min)"
+)
+
+print(
+    "Predictive:",
+    pred_start,
+    "to",
+    pred_end,
+    f"({(pred_end-pred_start).total_seconds()/60:.2f} min)"
+)
+
+
+hpa_metrics = calculate_metrics(
+    hpa,
+    "HPA"
+)
+
+pred_metrics = calculate_metrics(
+    pred,
+    "Predictive"
+)
+
+results = pd.DataFrame(
+    [hpa_metrics, pred_metrics]
+)
+
+
+print("\n=== FINAL COMPARISON ===")
+
+pd.set_option(
+    "display.max_columns",
+    None
+)
+
+print(
+    results.round(3).to_string(index=False)
+)
+
+
+print_scaling_events(
+    hpa,
+    "HPA"
+)
+
+print_scaling_events(
+    pred,
+    "PREDICTIVE"
+)
+
+
+results.to_csv(
+    "ml/data/final_autoscaler_comparison.csv",
+    index=False
+)
+
+hpa.to_csv(
+    "ml/data/final_hpa_active.csv",
+    index=False
+)
+
+pred.to_csv(
+    "ml/data/final_predictive_active.csv",
+    index=False
+)
+
+
+print(
+    "\nSaved:"
+)
+
+print(
+    "ml/data/final_autoscaler_comparison.csv"
+)
+
+print(
+    "ml/data/final_hpa_active.csv"
+)
+
+print(
+    "ml/data/final_predictive_active.csv"
+)
+
+
+============================================================
+FILE: ml/scripts/plot_final_comparison.py
+============================================================
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# ============================================================
+# FILE LOCATIONS
+# ============================================================
+
+HPA_FILE = "ml/data/final_hpa_active.csv"
+PRED_FILE = "ml/data/final_predictive_active.csv"
+OUTPUT_DIR = "ml/results"
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+
+# ============================================================
+# LOAD DATA
+# ============================================================
+
+def prepare(path):
+    df = pd.read_csv(path)
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+    # Convert timestamps to elapsed seconds from workload start
+    df["elapsed_seconds"] = (
+        df["timestamp"] - df["timestamp"].iloc[0]
+    ).dt.total_seconds()
+
+    return df
+
+
+hpa = prepare(HPA_FILE)
+pred = prepare(PRED_FILE)
+
+
+# ============================================================
+# FIGURE 1
+# HPA REQUEST RATE + REPLICA COUNT
+# ============================================================
+
+fig, ax1 = plt.subplots(figsize=(10, 5.5))
+
+# Request rate
+ax1.plot(
+    hpa["elapsed_seconds"],
+    hpa["request_rate"],
+    color="blue",
+    linewidth=2,
+    label="Request Rate"
+)
+
+ax1.set_xlabel("Elapsed Time (seconds)")
+ax1.set_ylabel(
+    "Request Rate (requests/s)",
+    color="blue"
+)
+
+ax1.tick_params(
+    axis="y",
+    labelcolor="blue"
+)
+
+ax1.grid(
+    True,
+    alpha=0.25
+)
+
+# Replica count
+ax2 = ax1.twinx()
+
+ax2.step(
+    hpa["elapsed_seconds"],
+    hpa["replicas"],
+    where="post",
+    color="red",
+    linewidth=2,
+    label="Backend Replicas"
+)
+
+ax2.set_ylabel(
+    "Number of Replicas",
+    color="red"
+)
+
+ax2.tick_params(
+    axis="y",
+    labelcolor="red"
+)
+
+ax2.set_ylim(0.5, 5.5)
+ax2.set_yticks([1, 2, 3, 4, 5])
+
+# Combined legend
+lines1, labels1 = ax1.get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+
+ax1.legend(
+    lines1 + lines2,
+    labels1 + labels2,
+    loc="upper left"
+)
+
+plt.title(
+    "Kubernetes HPA: Request Rate and Replica Scaling"
+)
+
+fig.tight_layout()
+
+plt.savefig(
+    f"{OUTPUT_DIR}/hpa_scaling.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+
+plt.close()
+
+
+# ============================================================
+# FIGURE 2
+# PREDICTIVE REQUEST RATE + REPLICA COUNT
+# ============================================================
+
+fig, ax1 = plt.subplots(figsize=(10, 5.5))
+
+# Request rate
+ax1.plot(
+    pred["elapsed_seconds"],
+    pred["request_rate"],
+    color="blue",
+    linewidth=2,
+    label="Request Rate"
+)
+
+ax1.set_xlabel("Elapsed Time (seconds)")
+ax1.set_ylabel(
+    "Request Rate (requests/s)",
+    color="blue"
+)
+
+ax1.tick_params(
+    axis="y",
+    labelcolor="blue"
+)
+
+ax1.grid(
+    True,
+    alpha=0.25
+)
+
+# Replica count
+ax2 = ax1.twinx()
+
+ax2.step(
+    pred["elapsed_seconds"],
+    pred["replicas"],
+    where="post",
+    color="red",
+    linewidth=2,
+    label="Backend Replicas"
+)
+
+ax2.set_ylabel(
+    "Number of Replicas",
+    color="red"
+)
+
+ax2.tick_params(
+    axis="y",
+    labelcolor="red"
+)
+
+ax2.set_ylim(0.5, 5.5)
+ax2.set_yticks([1, 2, 3, 4, 5])
+
+# Combined legend
+lines1, labels1 = ax1.get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+
+ax1.legend(
+    lines1 + lines2,
+    labels1 + labels2,
+    loc="upper left"
+)
+
+plt.title(
+    "Predictive Autoscaler: Request Rate and Replica Scaling"
+)
+
+fig.tight_layout()
+
+plt.savefig(
+    f"{OUTPUT_DIR}/predictive_scaling.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+
+plt.close()
+
+
+# ============================================================
+# FIGURE 3
+# DIRECT HPA VS PREDICTIVE REPLICA COMPARISON
+# ============================================================
+
+fig, ax = plt.subplots(figsize=(10, 5.5))
+
+ax.step(
+    hpa["elapsed_seconds"],
+    hpa["replicas"],
+    where="post",
+    color="blue",
+    linewidth=2.2,
+    label="Kubernetes HPA"
+)
+
+ax.step(
+    pred["elapsed_seconds"],
+    pred["replicas"],
+    where="post",
+    color="red",
+    linewidth=2.2,
+    label="Predictive Autoscaler"
+)
+
+ax.set_xlabel(
+    "Elapsed Time (seconds)"
+)
+
+ax.set_ylabel(
+    "Number of Backend Replicas"
+)
+
+ax.set_ylim(0.5, 5.5)
+ax.set_yticks([1, 2, 3, 4, 5])
+
+ax.grid(
+    True,
+    alpha=0.25
+)
+
+ax.legend(
+    loc="lower right"
+)
+
+plt.title(
+    "Replica Scaling Comparison: HPA vs Predictive Autoscaler"
+)
+
+fig.tight_layout()
+
+plt.savefig(
+    f"{OUTPUT_DIR}/replica_comparison.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+
+plt.close()
+
+
+# ============================================================
+# FINISHED
+# ============================================================
+
+print("\n=== GRAPHS GENERATED SUCCESSFULLY ===")
+print(f"1. {OUTPUT_DIR}/hpa_scaling.png")
+print(f"2. {OUTPUT_DIR}/predictive_scaling.png")
+print(f"3. {OUTPUT_DIR}/replica_comparison.png")
+
+
+============================================================
+FILE: ml/scripts/plot_validation_predictions.py
+============================================================
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Load validation predictions
+df = pd.read_csv("ml/data/validation_predictions.csv")
+
+# Convert timestamp to datetime
+df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+# Convert time to elapsed minutes from the start of validation
+df["elapsed_minutes"] = (
+    df["timestamp"] - df["timestamp"].iloc[0]
+).dt.total_seconds() / 60
+
+# Create plot
+plt.figure(figsize=(12, 6))
+
+plt.plot(
+    df["elapsed_minutes"],
+    df["future_cpu_mcpu"],
+    linewidth=2,
+    label="Actual future CPU"
+)
+
+plt.plot(
+    df["elapsed_minutes"],
+    df["predicted_future_cpu_mcpu"],
+    linewidth=2,
+    label="Predicted future CPU"
+)
+
+plt.xlabel("Elapsed time (minutes)")
+plt.ylabel("Backend CPU demand (mCPU)")
+plt.title("Independent Validation: Actual vs Predicted Future CPU Demand")
+
+plt.grid(True, alpha=0.3)
+plt.legend()
+plt.tight_layout()
+
+# Save high-resolution image
+plt.savefig(
+    "ml/results/validation_actual_vs_predicted.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+
+plt.close()
+
+print("Saved: ml/results/validation_actual_vs_predicted.png")
+
+
+============================================================
+FILE: ml/scripts/predictive_scaler.py
+============================================================
+import math
+import subprocess
+import time
+from collections import deque
+
+import joblib
+import pandas as pd
+import requests
+
+
+PROMETHEUS_URL = "http://127.0.0.1:9090"
+
+MODEL_FILE = "ml/models/cpu_predictor.joblib"
+
+NAMESPACE = "ml-autoscaling"
+DEPLOYMENT = "backend"
+
+MIN_REPLICAS = 1
+MAX_REPLICAS = 5
+
+# Backend CPU request = 100m
+CPU_REQUEST_PER_POD_MCPU = 100
+
+# Equivalent to Kubernetes HPA target = 50%
+TARGET_CPU_UTILISATION = 0.50
+
+# Effective target CPU per replica = 50m
+TARGET_CPU_PER_POD_MCPU = (
+    CPU_REQUEST_PER_POD_MCPU * TARGET_CPU_UTILISATION
+)
+
+# Collect metrics every 10 seconds
+SAMPLE_INTERVAL = 10
+
+# Prevent immediate scale-down after a scale-up
+SCALE_DOWN_COOLDOWN = 60
+
+
+QUERIES = {
+    "request_rate":
+        'sum(rate(k6_http_reqs_total[1m]))',
+
+    "cpu_mcpu": '''
+        sum(
+            rate(
+                container_cpu_usage_seconds_total{
+                    namespace="ml-autoscaling",
+                    pod=~"backend-.*",
+                    cpu="total"
+                }[1m]
+            )
+        ) * 1000
+    ''',
+
+    "memory_mib": '''
+        sum(
+            container_memory_working_set_bytes{
+                namespace="ml-autoscaling",
+                pod=~"backend-.*"
+            }
+        ) / 1024 / 1024
+    ''',
+
+    "replicas": '''
+        kube_deployment_status_replicas{
+            namespace="ml-autoscaling",
+            deployment="backend"
+        }
+    ''',
+
+    "avg_response_ms": '''
+        sum(rate(k6_http_req_duration_milliseconds_sum[1m]))
+        /
+        sum(rate(k6_http_req_duration_milliseconds_count[1m]))
+    ''',
+
+    "p95_response_ms": '''
+        histogram_quantile(
+            0.95,
+            sum by (le) (
+                rate(k6_http_req_duration_milliseconds_bucket[1m])
+            )
+        )
+    '''
+}
+
+
+def query_prometheus(query):
+    try:
+        response = requests.get(
+            f"{PROMETHEUS_URL}/api/v1/query",
+            params={"query": query},
+            timeout=5,
+        )
+
+        response.raise_for_status()
+
+        result = response.json()["data"]["result"]
+
+        if not result:
+            return 0.0
+
+        return float(result[0]["value"][1])
+
+    except Exception as error:
+        print("Prometheus query error:", error)
+        return 0.0
+
+
+def scale_deployment(replicas):
+    command = [
+        "kubectl",
+        "scale",
+        "deployment",
+        DEPLOYMENT,
+        f"--replicas={replicas}",
+        "-n",
+        NAMESPACE,
+    ]
+
+    subprocess.run(
+        command,
+        check=True
+    )
+
+
+# --------------------------------------------------
+# Load trained model
+# --------------------------------------------------
+
+model_package = joblib.load(MODEL_FILE)
+
+model = model_package["model"]
+features = model_package["features"]
+
+print("=== AI PREDICTIVE AUTOSCALER ===")
+print("Model:", MODEL_FILE)
+print("Prediction horizon: 60 seconds")
+print(
+    "Target CPU per replica:",
+    TARGET_CPU_PER_POD_MCPU,
+    "mCPU"
+)
+print(
+    f"Replica range: {MIN_REPLICAS}-{MAX_REPLICAS}"
+)
+
+
+# --------------------------------------------------
+# Historical metric buffers
+# --------------------------------------------------
+
+request_history = deque(maxlen=6)
+cpu_history = deque(maxlen=6)
+
+last_scale_up_time = 0
+
+# Tracks the most recent replica count requested by
+# the predictive scaler while Kubernetes is converging.
+last_requested_replicas = None
+
+
+print("\nCollecting initial history...")
+
+
+try:
+
+    while True:
+
+        request_rate = query_prometheus(
+            QUERIES["request_rate"]
+        )
+
+        cpu_mcpu = query_prometheus(
+            QUERIES["cpu_mcpu"]
+        )
+
+        memory_mib = query_prometheus(
+            QUERIES["memory_mib"]
+        )
+
+        replicas = query_prometheus(
+            QUERIES["replicas"]
+        )
+
+        avg_response_ms = query_prometheus(
+            QUERIES["avg_response_ms"]
+        )
+
+        p95_response_ms = query_prometheus(
+            QUERIES["p95_response_ms"]
+        )
+
+
+        request_history.append(request_rate)
+        cpu_history.append(cpu_mcpu)
+
+
+        # Need six samples for lag-6 / rolling-6 features
+        if len(request_history) < 6:
+
+            print(
+                f"History {len(request_history)}/6 | "
+                f"requests={request_rate:.2f} | "
+                f"CPU={cpu_mcpu:.2f}m"
+            )
+
+            time.sleep(SAMPLE_INTERVAL)
+            continue
+
+
+        # --------------------------------------------------
+        # Generate the same features used during training
+        # --------------------------------------------------
+
+        row = {
+            "request_rate": request_rate,
+            "cpu_mcpu": cpu_mcpu,
+            "memory_mib": memory_mib,
+            "replicas": replicas,
+            "avg_response_ms": avg_response_ms,
+            "p95_response_ms": p95_response_ms,
+
+            "request_rate_lag1":
+                request_history[-2],
+
+            "request_rate_lag3":
+                request_history[-4],
+
+            "request_rate_lag6":
+                request_history[0],
+
+            "cpu_lag1":
+                cpu_history[-2],
+
+            "cpu_lag3":
+                cpu_history[-4],
+
+            "cpu_lag6":
+                cpu_history[0],
+
+            "request_rate_rolling_mean_3":
+                sum(list(request_history)[-3:]) / 3,
+
+            "request_rate_rolling_mean_6":
+                sum(request_history) / 6,
+
+            "cpu_rolling_mean_3":
+                sum(list(cpu_history)[-3:]) / 3,
+
+            "cpu_rolling_mean_6":
+                sum(cpu_history) / 6,
+
+            "request_rate_change":
+                request_rate - request_history[-4],
+
+            "cpu_change":
+                cpu_mcpu - cpu_history[-4],
+        }
+
+
+        X = pd.DataFrame(
+            [row],
+            columns=features
+        )
+
+
+        # --------------------------------------------------
+        # Predict CPU demand approximately 60 seconds ahead
+        # --------------------------------------------------
+
+        predicted_cpu = float(
+            model.predict(X)[0]
+        )
+
+        predicted_cpu = max(
+            0,
+            predicted_cpu
+        )
+
+
+        # --------------------------------------------------
+        # Convert predicted CPU demand to replica count
+        # --------------------------------------------------
+
+        desired_replicas = math.ceil(
+            predicted_cpu /
+            TARGET_CPU_PER_POD_MCPU
+        )
+
+        desired_replicas = max(
+            MIN_REPLICAS,
+            desired_replicas
+        )
+
+        desired_replicas = min(
+            MAX_REPLICAS,
+            desired_replicas
+        )
+
+
+        current_replicas = int(
+            round(replicas)
+        )
+
+
+        print(
+            f"Requests={request_rate:7.2f} req/s | "
+            f"CPU={cpu_mcpu:7.2f}m | "
+            f"Predicted(+60s)={predicted_cpu:7.2f}m | "
+            f"Current={current_replicas} | "
+            f"Desired={desired_replicas}"
+        )
+
+
+        # --------------------------------------------------
+        # Determine effective current replica state
+        # --------------------------------------------------
+
+        effective_current = current_replicas
+
+        if last_requested_replicas is not None:
+
+            effective_current = last_requested_replicas
+
+            # Kubernetes has caught up with the previous
+            # scaling request.
+            if current_replicas == last_requested_replicas:
+
+                last_requested_replicas = None
+                effective_current = current_replicas
+
+
+        # --------------------------------------------------
+        # Scale up
+        # --------------------------------------------------
+
+        if desired_replicas > effective_current:
+
+            print(
+                f" SCALE UP: "
+                f"{effective_current} -> "
+                f"{desired_replicas}"
+            )
+
+            scale_deployment(
+                desired_replicas
+            )
+
+            last_requested_replicas = desired_replicas
+            last_scale_up_time = time.time()
+
+
+        # --------------------------------------------------
+        # Scale down
+        # --------------------------------------------------
+
+        elif desired_replicas < effective_current:
+
+            seconds_since_scale_up = (
+                time.time() - last_scale_up_time
+            )
+
+            if (
+                seconds_since_scale_up
+                >= SCALE_DOWN_COOLDOWN
+            ):
+
+                print(
+                    f" SCALE DOWN: "
+                    f"{effective_current} -> "
+                    f"{desired_replicas}"
+                )
+
+                scale_deployment(
+                    desired_replicas
+                )
+
+                last_requested_replicas = desired_replicas
+
+            else:
+
+                remaining = int(
+                    SCALE_DOWN_COOLDOWN
+                    - seconds_since_scale_up
+                )
+
+                print(
+                    " Scale-down deferred "
+                    f"(cooldown: {remaining}s remaining)"
+                )
+
+
+        time.sleep(SAMPLE_INTERVAL)
+
+
+except KeyboardInterrupt:
+
+    print(
+        "\nPredictive autoscaler stopped."
+    )
+
+except Exception as error:
+
+    print(
+        "\nPredictive autoscaler stopped due to error:"
+    )
+
+    print(error)
+
+
+============================================================
+FILE: ml/scripts/preprocess.py
+============================================================
+import pandas as pd
+
+INPUT_FILE = "ml/data/training_run_2026-08-28.csv"
+OUTPUT_FILE = "ml/data/ml_dataset.csv"
+
+# Prediction horizon
+PREDICTION_SECONDS = 60
+
+
+# -------------------------------------------------
+# Load data
+# -------------------------------------------------
+
+df = pd.read_csv(INPUT_FILE)
+
+df["timestamp"] = pd.to_datetime(df["timestamp"])
+df = df.sort_values("timestamp").reset_index(drop=True)
+
+
+# -------------------------------------------------
+# Create historical features
+# -------------------------------------------------
+
+# Approximately 10, 30 and 60 seconds of history.
+df["request_rate_lag1"] = df["request_rate"].shift(1)
+df["request_rate_lag3"] = df["request_rate"].shift(3)
+df["request_rate_lag6"] = df["request_rate"].shift(6)
+
+df["cpu_lag1"] = df["cpu_mcpu"].shift(1)
+df["cpu_lag3"] = df["cpu_mcpu"].shift(3)
+df["cpu_lag6"] = df["cpu_mcpu"].shift(6)
+
+
+# Recent rolling behaviour
+df["request_rate_rolling_mean_3"] = (
+    df["request_rate"].rolling(3).mean()
+)
+
+df["request_rate_rolling_mean_6"] = (
+    df["request_rate"].rolling(6).mean()
+)
+
+df["cpu_rolling_mean_3"] = (
+    df["cpu_mcpu"].rolling(3).mean()
+)
+
+df["cpu_rolling_mean_6"] = (
+    df["cpu_mcpu"].rolling(6).mean()
+)
+
+
+# Workload trend
+df["request_rate_change"] = (
+    df["request_rate"] - df["request_rate_lag3"]
+)
+
+df["cpu_change"] = (
+    df["cpu_mcpu"] - df["cpu_lag3"]
+)
+
+
+# -------------------------------------------------
+# Create true 60-second future CPU target
+# -------------------------------------------------
+
+timestamps = df["timestamp"]
+cpu_values = df["cpu_mcpu"]
+
+future_cpu = []
+
+for current_time in timestamps:
+
+    target_time = current_time + pd.Timedelta(
+        seconds=PREDICTION_SECONDS
+    )
+
+    future_rows = df[df["timestamp"] >= target_time]
+
+    if future_rows.empty:
+        future_cpu.append(None)
+    else:
+        future_cpu.append(
+            future_rows.iloc[0]["cpu_mcpu"]
+        )
+
+df["future_cpu_mcpu"] = future_cpu
+
+
+# -------------------------------------------------
+# Remove rows where lag or future target is missing
+# -------------------------------------------------
+
+df = df.dropna().reset_index(drop=True)
+
+
+# -------------------------------------------------
+# Save processed dataset
+# -------------------------------------------------
+
+df.to_csv(OUTPUT_FILE, index=False)
+
+
+print("=== PREPROCESSING COMPLETE ===")
+print("Input:", INPUT_FILE)
+print("Output:", OUTPUT_FILE)
+print("Rows:", len(df))
+print("Columns:", len(df.columns))
+
+print("\nDataset columns:")
+for column in df.columns:
+    print(" -", column)
+
+print("\nFuture CPU target:")
+print(df["future_cpu_mcpu"].describe())
+
+
+============================================================
+FILE: ml/scripts/save_model.py
+============================================================
+import os
+import joblib
+import pandas as pd
+
+from sklearn.linear_model import LinearRegression
+
+INPUT_FILE = "ml/data/ml_dataset.csv"
+MODEL_DIR = "ml/models"
+MODEL_FILE = f"{MODEL_DIR}/cpu_predictor.joblib"
+
+FEATURES = [
+    "request_rate",
+    "cpu_mcpu",
+    "memory_mib",
+    "replicas",
+    "avg_response_ms",
+    "p95_response_ms",
+
+    "request_rate_lag1",
+    "request_rate_lag3",
+    "request_rate_lag6",
+
+    "cpu_lag1",
+    "cpu_lag3",
+    "cpu_lag6",
+
+    "request_rate_rolling_mean_3",
+    "request_rate_rolling_mean_6",
+
+    "cpu_rolling_mean_3",
+    "cpu_rolling_mean_6",
+
+    "request_rate_change",
+    "cpu_change",
+]
+
+TARGET = "future_cpu_mcpu"
+
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+df = pd.read_csv(INPUT_FILE)
+
+X = df[FEATURES]
+y = df[TARGET]
+
+model = LinearRegression()
+
+model.fit(X, y)
+
+joblib.dump(
+    {
+        "model": model,
+        "features": FEATURES,
+        "prediction_horizon_seconds": 60
+    },
+    MODEL_FILE
+)
+
+print("=== MODEL SAVED ===")
+print("Model:", MODEL_FILE)
+print("Training samples:", len(df))
+print("Features:", len(FEATURES))
+print("Prediction horizon: 60 seconds")
+
+
+============================================================
+FILE: ml/scripts/train_model.py
+============================================================
+import pandas as pd
+
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import (
+    RandomForestRegressor,
+    GradientBoostingRegressor
+)
+from sklearn.metrics import (
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score
+)
+
+INPUT_FILE = "ml/data/ml_dataset.csv"
+
+df = pd.read_csv(INPUT_FILE)
+df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+features = [
+    "request_rate",
+    "cpu_mcpu",
+    "memory_mib",
+    "replicas",
+    "avg_response_ms",
+    "p95_response_ms",
+    "request_rate_lag1",
+    "request_rate_lag3",
+    "request_rate_lag6",
+    "cpu_lag1",
+    "cpu_lag3",
+    "cpu_lag6",
+    "request_rate_rolling_mean_3",
+    "request_rate_rolling_mean_6",
+    "cpu_rolling_mean_3",
+    "cpu_rolling_mean_6",
+    "request_rate_change",
+    "cpu_change",
+]
+
+target = "future_cpu_mcpu"
+
+# Chronological 80/20 split
+split_index = int(len(df) * 0.80)
+
+train = df.iloc[:split_index]
+test = df.iloc[split_index:]
+
+X_train = train[features]
+y_train = train[target]
+
+X_test = test[features]
+y_test = test[target]
+
+print("=== DATA SPLIT ===")
+print("Training samples:", len(train))
+print("Testing samples:", len(test))
+
+models = {
+    "Linear Regression": LinearRegression(),
+
+    "Random Forest": RandomForestRegressor(
+        n_estimators=200,
+        max_depth=10,
+        random_state=42,
+        n_jobs=-1
+    ),
+
+    "Gradient Boosting": GradientBoostingRegressor(
+        n_estimators=200,
+        max_depth=3,
+        learning_rate=0.05,
+        random_state=42
+    )
+}
+
+results = []
+
+for name, model in models.items():
+
+    model.fit(X_train, y_train)
+    predictions = model.predict(X_test)
+
+    mae = mean_absolute_error(y_test, predictions)
+    rmse = mean_squared_error(y_test, predictions) ** 0.5
+    r2 = r2_score(y_test, predictions)
+
+    results.append({
+        "Model": name,
+        "MAE": mae,
+        "RMSE": rmse,
+        "R2": r2
+    })
+
+results_df = pd.DataFrame(results)
+
+print("\n=== MODEL COMPARISON ===")
+print(results_df.round(3).to_string(index=False))
+
+
+============================================================
+FILE: ml/scripts/validate_model.py
+============================================================
+import pandas as pd
+
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import (
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score
+)
+
+TRAINING_FILE = "ml/data/ml_dataset.csv"
+VALIDATION_FILE = "ml/data/metrics_2026-08-28_21-38-55.csv"
+
+PREDICTION_SECONDS = 60
+
+
+features = [
+    "request_rate",
+    "cpu_mcpu",
+    "memory_mib",
+    "replicas",
+    "avg_response_ms",
+    "p95_response_ms",
+
+    "request_rate_lag1",
+    "request_rate_lag3",
+    "request_rate_lag6",
+
+    "cpu_lag1",
+    "cpu_lag3",
+    "cpu_lag6",
+
+    "request_rate_rolling_mean_3",
+    "request_rate_rolling_mean_6",
+
+    "cpu_rolling_mean_3",
+    "cpu_rolling_mean_6",
+
+    "request_rate_change",
+    "cpu_change",
+]
+
+target = "future_cpu_mcpu"
+
+
+def preprocess_validation(df):
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = df.sort_values("timestamp").reset_index(drop=True)
+
+    # Lag features
+    df["request_rate_lag1"] = df["request_rate"].shift(1)
+    df["request_rate_lag3"] = df["request_rate"].shift(3)
+    df["request_rate_lag6"] = df["request_rate"].shift(6)
+
+    df["cpu_lag1"] = df["cpu_mcpu"].shift(1)
+    df["cpu_lag3"] = df["cpu_mcpu"].shift(3)
+    df["cpu_lag6"] = df["cpu_mcpu"].shift(6)
+
+    # Rolling averages
+    df["request_rate_rolling_mean_3"] = (
+        df["request_rate"].rolling(3).mean()
+    )
+
+    df["request_rate_rolling_mean_6"] = (
+        df["request_rate"].rolling(6).mean()
+    )
+
+    df["cpu_rolling_mean_3"] = (
+        df["cpu_mcpu"].rolling(3).mean()
+    )
+
+    df["cpu_rolling_mean_6"] = (
+        df["cpu_mcpu"].rolling(6).mean()
+    )
+
+    # Trends
+    df["request_rate_change"] = (
+        df["request_rate"] - df["request_rate_lag3"]
+    )
+
+    df["cpu_change"] = (
+        df["cpu_mcpu"] - df["cpu_lag3"]
+    )
+
+    # True 60-second future CPU target
+    future_cpu = []
+
+    for current_time in df["timestamp"]:
+
+        target_time = current_time + pd.Timedelta(
+            seconds=PREDICTION_SECONDS
+        )
+
+        future_rows = df[df["timestamp"] >= target_time]
+
+        if future_rows.empty:
+            future_cpu.append(None)
+        else:
+            future_cpu.append(
+                future_rows.iloc[0]["cpu_mcpu"]
+            )
+
+    df["future_cpu_mcpu"] = future_cpu
+
+    return df.dropna().reset_index(drop=True)
+
+
+# -------------------------------------------------
+# Original training data
+# -------------------------------------------------
+
+train = pd.read_csv(TRAINING_FILE)
+
+X_train = train[features]
+y_train = train[target]
+
+
+# -------------------------------------------------
+# Independent validation workload
+# -------------------------------------------------
+
+validation_raw = pd.read_csv(VALIDATION_FILE)
+
+validation = preprocess_validation(
+    validation_raw
+)
+
+X_validation = validation[features]
+y_validation = validation[target]
+
+
+# -------------------------------------------------
+# Train Linear Regression
+# -------------------------------------------------
+
+model = LinearRegression()
+
+model.fit(
+    X_train,
+    y_train
+)
+
+
+# -------------------------------------------------
+# Predict unseen workload
+# -------------------------------------------------
+
+predictions = model.predict(
+    X_validation
+)
+
+
+# Prevent impossible negative CPU predictions
+predictions = predictions.clip(min=0)
+
+
+# -------------------------------------------------
+# Evaluate
+# -------------------------------------------------
+
+mae = mean_absolute_error(
+    y_validation,
+    predictions
+)
+
+rmse = mean_squared_error(
+    y_validation,
+    predictions
+) ** 0.5
+
+r2 = r2_score(
+    y_validation,
+    predictions
+)
+
+
+print("=== INDEPENDENT VALIDATION ===")
+
+print("Training samples:", len(train))
+print("Validation samples:", len(validation))
+
+print(
+    "Validation period:",
+    validation["timestamp"].min(),
+    "to",
+    validation["timestamp"].max()
+)
+
+print("\nValidation workload:")
+print(
+    "Max request rate:",
+    round(validation["request_rate"].max(), 3)
+)
+
+print(
+    "Max CPU:",
+    round(validation["cpu_mcpu"].max(), 3),
+    "mCPU"
+)
+
+print(
+    "Max replicas:",
+    int(validation["replicas"].max())
+)
+
+
+print("\n=== LINEAR REGRESSION VALIDATION RESULTS ===")
+print(f"MAE:  {mae:.3f} mCPU")
+print(f"RMSE: {rmse:.3f} mCPU")
+print(f"R²:   {r2:.3f}")
+
+
+# Save prediction results for later graphs/report
+results = validation[
+    [
+        "timestamp",
+        "request_rate",
+        "cpu_mcpu",
+        "future_cpu_mcpu",
+        "replicas"
+    ]
+].copy()
+
+results["predicted_future_cpu_mcpu"] = predictions
+
+results.to_csv(
+    "ml/data/validation_predictions.csv",
+    index=False
+)
+
+print(
+    "\nSaved predictions to:",
+    "ml/data/validation_predictions.csv"
+)
+

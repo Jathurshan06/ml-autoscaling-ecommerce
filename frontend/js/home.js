@@ -41,5 +41,4 @@ async function loadFeaturedProducts() {
 
 }
 
-
 loadFeaturedProducts();
